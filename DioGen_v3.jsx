@@ -5,7 +5,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
  ║  DioGen v3 — Genomic Intelligence Protocol               ║
  ║  Quiz-Flow Onboarding · Enhanced Diagnostics · 32K tokens ║
  ║  Brand: Clinical Cobalt + Genome Teal                     ║
- ║  Model: claude-sonnet-4-5-20250929 (Sonnet 4.5)          ║
+ ║  Model: claude-sonnet-4-6 (Sonnet 4.5)          ║
  ║  Production Prototype — Feb 2026                          ║
  ╚══════════════════════════════════════════════════════════╝
 */
@@ -597,7 +597,12 @@ export default function DioGen() {
   const [elapsed, setElapsed] = useState(0);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [apiKey, setApiKey] = useState(() => {
-    try { return localStorage.getItem("diogen_api_key") || ANTHROPIC_API_KEY || ""; } catch { return ANTHROPIC_API_KEY || ""; }
+    try {
+      const envKey = ANTHROPIC_API_KEY || "";
+      // Always prefer env key when available; fall back to localStorage
+      if (envKey) { localStorage.setItem("diogen_api_key", envKey); return envKey; }
+      return localStorage.getItem("diogen_api_key") || "";
+    } catch { return ANTHROPIC_API_KEY || ""; }
   });
 
   const fRef = useRef(null);
@@ -640,12 +645,11 @@ export default function DioGen() {
   // Timed diagnostic warnings
   useEffect(() => {
     if (step !== "processing") return;
-    if (elapsed === 12) addLog("Still waiting for AI response — full analyses typically take 30-60s...", "system");
-    if (elapsed === 30) addLog("30s elapsed. Large SNP sets require more processing time.", "system");
-    if (elapsed === 50) addLog("50s — response taking longer than usual. Possible high API load.", "system");
-    if (elapsed === 75) addLog("75s — consider checking network.", "system");
-    if (elapsed === 100) addLog("100s — still waiting. Large analyses can take 2-3 minutes.", "system");
-    if (elapsed === 180) addLog("180s — response taking longer than usual. Will timeout at 300s.", "error");
+    if (elapsed === 15) addLog("AI is analyzing your genome — 82 SNPs typically takes 60-120s...", "system");
+    if (elapsed === 45) addLog("45s — analysis in progress. Large SNP sets require thorough processing.", "system");
+    if (elapsed === 90) addLog("90s — still processing. Comprehensive reports can take up to 2-3 minutes.", "system");
+    if (elapsed === 150) addLog("150s — taking longer than usual. Will timeout at 300s.", "system");
+    if (elapsed === 240) addLog("240s — response delayed. Will timeout at 300s.", "error");
   }, [elapsed, step]);
 
   const fmtTime = s => { const m = Math.floor(s / 60); const sec = s % 60; return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
@@ -666,6 +670,21 @@ export default function DioGen() {
     };
     r.onerror = () => setFileErr("Failed to read file. Please try again.");
     r.readAsText(f);
+  }, []);
+
+  const loadDemo = useCallback(async () => {
+    setFileErr("");
+    try {
+      const res = await fetch("/sample_dna_data.txt");
+      if (!res.ok) throw new Error("Failed to load demo file");
+      const text = await res.text();
+      const { source, data } = detectAndParse(text);
+      const count = Object.keys(data).length;
+      if (count < 10) { setFileErr("Demo data failed to parse."); return; }
+      setSrc(source + " (Demo)"); setRaw(data); setTotal(count); setStep("name");
+    } catch (e) {
+      setFileErr("Could not load demo data: " + e.message);
+    }
   }, []);
 
   const toggle = k => setGoals(p => p.includes(k) ? p.filter(g => g !== k) : [...p, k]);
@@ -708,15 +727,18 @@ export default function DioGen() {
 
     setProgStage(1);
     addLog("Initiating HTTPS connection to api.anthropic.com...", "system");
-    addLog("Model: claude-sonnet-4-5-20250929 | max_tokens: 8,000");
+    addLog("Model: claude-sonnet-4-6 | max_tokens: 16,000");
     addLog(`Privacy: Only ${matched.length} matched rsIDs transmitted (${(matched.length / total * 100).toFixed(3)}% of ${total.toLocaleString()} total)`);
     addLog("POST /v1/messages dispatched. Waiting for response...", "system");
-    addLog("Full analysis typically takes 30-60s depending on SNP count.");
+    addLog("Full analysis typically takes 60-120s for comprehensive reports.");
 
     try {
       const startT = Date.now();
       const timeout = setTimeout(() => { timedOutRef.current = true; ac.abort(); }, 300000);
       addLog("Fetch initiated — timeout set to 300s", "system");
+
+      // Advance to "Analyzing" stage after a brief delay — the AI is now working
+      setTimeout(() => setProgStage(2), 2000);
 
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -728,8 +750,8 @@ export default function DioGen() {
         },
         signal: ac.signal,
         body: JSON.stringify({
-          model: "claude-sonnet-4-5-20250929",
-          max_tokens: 8000,
+          model: "claude-sonnet-4-6",
+          max_tokens: 16000,
           system: SYS_PROMPT,
           messages: [{ role: "user", content: prompt }],
         }),
@@ -751,18 +773,18 @@ export default function DioGen() {
       }
       addLog(`Response received in ${elapsed_s}s (HTTP ${res.status})`, "success");
 
-      setProgStage(2);
+      setProgStage(3);
       addLog("Decoding response body...");
       const data = await res.json();
       const text = (data.content || []).map(b => b.text || "").join("");
       addLog(`Response: ${text.length.toLocaleString()} chars raw`);
       if (data.usage) {
         addLog(`Tokens — input: ${data.usage.input_tokens?.toLocaleString()}, output: ${data.usage.output_tokens?.toLocaleString()}`, "success");
-        const pct = data.usage.output_tokens ? Math.round((data.usage.output_tokens / 8000) * 100) : 0;
-        addLog(`Token budget: ${pct}% of 8K used${pct > 90 ? " ⚠ near limit" : ""}`);
+        const pct = data.usage.output_tokens ? Math.round((data.usage.output_tokens / 16000) * 100) : 0;
+        addLog(`Token budget: ${pct}% of 16K used${pct > 90 ? " ⚠ near limit" : ""}`);
       }
 
-      setProgStage(3);
+      setProgStage(4);
       addLog("Running robustJSONParse() — 5-layer recovery...");
       const parsed = robustJSONParse(text);
       const ps = parsed.snps || []; const su = parsed.supplements || [];
@@ -938,6 +960,33 @@ export default function DioGen() {
                 ⚠️ {fileErr}
               </div>
             )}
+
+            <div style={{ textAlign: "center", marginTop: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "center", marginBottom: 10 }}>
+                <div style={{ height: 1, flex: 1, background: T.s200 }} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: T.s400, textTransform: "uppercase", letterSpacing: 1 }}>or</span>
+                <div style={{ height: 1, flex: 1, background: T.s200 }} />
+              </div>
+              <button
+                onClick={loadDemo}
+                style={{
+                  width: "100%", padding: "14px 20px", borderRadius: 14,
+                  border: `1.5px solid ${T.teal}`,
+                  background: `${T.teal}08`, color: T.tealDark,
+                  fontSize: 14, fontWeight: 700, fontFamily: "'Outfit', sans-serif",
+                  cursor: "pointer", transition: "all 0.2s",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = `${T.teal}18`; e.currentTarget.style.borderColor = T.tealDark; }}
+                onMouseLeave={e => { e.currentTarget.style.background = `${T.teal}08`; e.currentTarget.style.borderColor = T.teal; }}
+              >
+                <span style={{ fontSize: 18 }}>🧪</span>
+                Try with Sample DNA Data
+              </button>
+              <p style={{ fontSize: 10, color: T.s400, margin: "8px 0 0", lineHeight: 1.4 }}>
+                Hypothetical dataset with 580+ SNPs — no real person's data
+              </p>
+            </div>
 
             <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
               <div style={{ flex: 1, padding: 12, background: T.s50, borderRadius: 12, border: `1px solid ${T.s200}` }}>
